@@ -229,19 +229,39 @@ void ExecuteScreenCaptureWorkflow () {
             DispatchMessageA ( &msg );
         }
 
-        if ( !g_selection.done ) return;
+        if (!g_selection.done) return; // User aborted via ESC key hook
 
-        int grabX = (std::min)( g_selection.start.x, g_selection.end.x );
-        int grabY = (std::min)( g_selection.start.y, g_selection.end.y );
-        int grabW = std::abs ( g_selection.start.x - g_selection.end.x );
-        int grabH = std::abs ( g_selection.start.y - g_selection.end.y );
+        int grabX = (std::min)(g_selection.start.x, g_selection.end.x);
+        int grabY = (std::min)(g_selection.start.y, g_selection.end.y);
+        int grabW = std::abs(g_selection.start.x - g_selection.end.x);
+        int grabH = std::abs(g_selection.start.y - g_selection.end.y);
 
-        if ( grabW < 5 || grabH < 5 ) {
-            MessageBoxA ( g_hMasterWindow, "Selected window capture boundaries are too small.", "Capture Error", MB_OK | MB_ICONERROR );
+        if (grabW < 5 || grabH < 5) {
+            MessageBoxA(g_hMasterWindow, "Selected window capture boundaries are too small.", "Capture Error", MB_OK | MB_ICONERROR);
             continue;
         }
 
-        cv::Mat grabbedFrame = CaptureTargetRegion ( grabX, grabY, grabW, grabH );
+        // --- THE UNIVERSIAL TRANSPARENCY BYPASS FIX ---
+        // 1. Hide the semi-transparent black overlay veil window instantly
+        ShowWindow(hOverlay, SW_HIDE);
+        
+        // 2. Force an immediate system repaint loop so the desktop underneath refreshes on screen
+        UpdateWindow(GetDesktopWindow());
+        Sleep(50); // Give the X11 server 50ms to clear the overlay graphic surface
+
+        // 3. Grab the raw desktop pixels now that the overlay barrier is completely gone
+        cv::Mat grabbedFrame = CaptureTargetRegion(grabX, grabY, grabW, grabH);
+
+        // 4. Destroy the overlay window since the selection action is completely finished
+        DestroyWindow(hOverlay);
+        // ----------------------------------------------
+
+        // Dynamic runtime check: Adjust color channels for Wine if running on Linux
+        cv::Mat processedFrame = grabbedFrame.clone();
+        HMODULE hWineGetVersion = GetModuleHandleA("ntdll.dll");
+        if (hWineGetVersion && GetProcAddress(hWineGetVersion, "wine_get_version")) {
+            cv::cvtColor(grabbedFrame, processedFrame, cv::COLOR_RGBA2BGRA);
+        }
 // Check the first 5 pixels of the captured frame
         for ( int i = 0; i < 5; i++ ) {
             // OpenCV Vec4b maps bytes sequentially in memory: [0]=B, [1]=G, [2]=R, [3]=A
@@ -252,8 +272,8 @@ void ExecuteScreenCaptureWorkflow () {
                 i, pixel[0], pixel[1], pixel[2] );
             OutputDebugStringA ( debugBuf ); // Prints to Visual Studio's Output Window or DebugView
         }
-        // Right after capturing your screen mat:
-        cv::imwrite ( "screengrab.png", grabbedFrame );
+        // Optional Debug: Verify the image visually on your Linux filesystem
+        cv::imwrite("screengrab.png", processedFrame);
 /*
         cv::Mat processedFrame = grabbedFrame.clone(); // Fallback default for native Windows
 
@@ -278,18 +298,18 @@ void ExecuteScreenCaptureWorkflow () {
             break;
         } else {
 */
-        if ( ProcessImageBuffer ( grabbedFrame, decodedOutput, true ) ) {
+        if (ProcessImageBuffer(processedFrame, decodedOutput, true)) {
             std::string choiceMsg = "Valid QR Code Found!\n\nContent:\n" + decodedOutput + "\n\nChoose an action:";
-            int selection = MessageBoxA ( g_hMasterWindow, choiceMsg.c_str (), "QR Code Decoded", MB_ABORTRETRYIGNORE | MB_ICONINFORMATION );
-
-            if ( selection == IDABORT ) break;
-            if ( selection == IDRETRY ) continue;
-            break;
+            int selection = MessageBoxA(g_hMasterWindow, choiceMsg.c_str(), "QR Code Decoded", MB_ABORTRETRYIGNORE | MB_ICONINFORMATION);
+            
+            if (selection == IDABORT) break;     
+            if (selection == IDRETRY) continue;  
+            break;                               
         } else {
-            int retryResult = MessageBoxA ( g_hMasterWindow,
+            int retryResult = MessageBoxA(g_hMasterWindow,
                 "No valid QR Code was discovered inside your selection canvas area.",
-                "Scan Evaluation Error", MB_RETRYCANCEL | MB_ICONERROR );
-            if ( retryResult != IDRETRY ) break;
+                "Scan Evaluation Error", MB_RETRYCANCEL | MB_ICONERROR);
+            if (retryResult != IDRETRY) break;
         }
     }
 }
