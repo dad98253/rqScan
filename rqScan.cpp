@@ -54,6 +54,9 @@ void CheckCameraAvailability () {
 }
 
 int WINAPI WinMain ( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow ) {
+	// Force the OS/Wine loader to trust our application coordinates explicitly
+    SetProcessDPIAware(); 
+    
     CheckCameraAvailability ();
 
     const char CLASS_NAME[] = "QRMasterWindowClass";
@@ -175,32 +178,54 @@ LRESULT CALLBACK OverlayProc ( HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
     return DefWindowProcA ( hwnd, uMsg, wParam, lParam );
 }
 
-cv::Mat CaptureTargetRegion ( int x, int y, int w, int h ) {
-    HDC hScreenDC = GetDC ( NULL );
-    HDC hMemoryDC = CreateCompatibleDC ( hScreenDC );
-    HBITMAP hBitmap = CreateCompatibleBitmap ( hScreenDC, w, h );
-    HGDIOBJ hOldBitmap = SelectObject ( hMemoryDC, hBitmap );
+cv::Mat CaptureTargetRegion(int x, int y, int w, int h) {
+    HDC hScreenDC = GetDC(NULL);
 
-    BitBlt ( hMemoryDC, 0, 0, w, h, hScreenDC, x, y, SRCCOPY | CAPTUREBLT );
-    cv::Mat frame ( h, w, CV_8UC4 );
+    // --- DYNAMIC DPI SCALING DETECTOR ---
+    // Fetch the physical screen dimensions vs logical layout dimensions
+    int physicalWidth  = GetDeviceCaps(hScreenDC, DESKTOPHORZRES);
+    int logicalWidth   = GetDeviceCaps(hScreenDC, HORZRES);
+    
+    // Calculate the exact scaling multiplier (e.g., 1.5 for 150%, 2.0 for 200%)
+    double scaleFactor = 1.0;
+    if (logicalWidth > 0) {
+        scaleFactor = (double)physicalWidth / (double)logicalWidth;
+    }
 
-    BITMAPINFOHEADER bi = { 0 };
-    bi.biSize = sizeof ( BITMAPINFOHEADER );
-    bi.biWidth = w;
-    bi.biHeight = -h;
+    // Multiply your cursor selection bounds by the scale factor to target the true physical pixels
+    int realX = (int)(x * scaleFactor);
+    int realY = (int)(y * scaleFactor);
+    int realW = (int)(w * scaleFactor);
+    int realH = (int)(h * scaleFactor);
+    // -------------------------------------
+
+    HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
+    HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, realW, realH);
+    HGDIOBJ hOldBitmap = SelectObject(hMemoryDC, hBitmap);
+
+    // Pass the real physical pixel boundaries to BitBlt
+    BitBlt(hMemoryDC, 0, 0, realW, realH, hScreenDC, realX, realY, SRCCOPY);
+    
+    cv::Mat frame(realH, realW, CV_8UC4);
+
+    BITMAPINFOHEADER bi = {0};
+    bi.biSize = sizeof(BITMAPINFOHEADER);
+    bi.biWidth = realW;
+    bi.biHeight = -realH;
     bi.biPlanes = 1;
     bi.biBitCount = 32;
     bi.biCompression = BI_RGB;
 
-    GetDIBits ( hMemoryDC, hBitmap, 0, h, frame.data, (BITMAPINFO *)&bi, DIB_RGB_COLORS );
+    GetDIBits(hMemoryDC, hBitmap, 0, realH, frame.data, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
 
-    SelectObject ( hMemoryDC, hOldBitmap );
-    DeleteObject ( hBitmap );
-    DeleteDC ( hMemoryDC );
-    ReleaseDC ( NULL, hScreenDC );
+    SelectObject(hMemoryDC, hOldBitmap);
+    DeleteObject(hBitmap);
+    DeleteDC(hMemoryDC);
+    ReleaseDC(NULL, hScreenDC);
 
     return frame;
 }
+
 
 void ExecuteScreenCaptureWorkflow () {
     while ( true ) {
