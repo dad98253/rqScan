@@ -181,44 +181,46 @@ LRESULT CALLBACK OverlayProc ( HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
 cv::Mat CaptureTargetRegion(int x, int y, int w, int h) {
     HDC hScreenDC = GetDC(NULL);
 
-    double scaleFactor = 1.0;
+    // 1. Fetch GNOME Panel/Dock Offsets dynamically using the active Work Area mapping rules
+    RECT workArea = { 0 };
+    int offsetX = 0;
+    int offsetY = 0;
 
-    // 1. Check if a custom Linux scaling override is passed via Wine
-    char envBuf[32];
-    DWORD envLen = GetEnvironmentVariableA("UBUNTU_SCALE", envBuf, sizeof(envBuf));
-    
-    if (envLen > 0 && envLen < sizeof(envBuf)) {
-        // A custom scale variable was found! (e.g. "2.0")
-        scaleFactor = atof(envBuf);
-    } else {
-        // 2. Fall back to standard Windows DPI calculation if running natively
-        int physicalWidth  = GetDeviceCaps(hScreenDC, DESKTOPHORZRES);
-        int logicalWidth   = GetDeviceCaps(hScreenDC, HORZRES);
-        if (logicalWidth > 0 && physicalWidth != logicalWidth) {
-            scaleFactor = (double)physicalWidth / (double)logicalWidth;
-        }
+    if (SystemParametersInfoA(SPI_GETWORKAREA, 0, &workArea, 0)) {
+        // The Work Area 'left' is the dock width; 'top' is the status bar thickness
+        offsetX = workArea.left;
+        offsetY = workArea.top;
     }
-    
+
+    // 2. Fall back to standard Windows DPI calculation if running natively on a scaled screen
+    double scaleFactor = 1.0;
+    int physicalWidth  = GetDeviceCaps(hScreenDC, DESKTOPHORZRES);
+    int logicalWidth   = GetDeviceCaps(hScreenDC, HORZRES);
+    if (logicalWidth > 0 && physicalWidth != logicalWidth) {
+        scaleFactor = (double)physicalWidth / (double)logicalWidth;
+    }
+
+        
     FILE *fptr = fopen("scale.txt", "w");
     if (fptr != NULL) {
+      	fprintf(fptr, "offsetX: %d\n", offsetX);
+  		fprintf(fptr, "offsetY: %d\n", offsetY);
     	fprintf(fptr, "scaleFactor: %.4f\n", scaleFactor);
     	fclose(fptr);
     }
 
 
-    // Multiply selection bounds by the dynamic scale factor
-    int realX = (int)(x * scaleFactor);
-    int realY = (int)(y * scaleFactor);
+    // 3. Inject the dynamic workspace offsets to correctly align cursor bounds with the physical display
+    int realX = (int)((x + offsetX) * scaleFactor);
+    int realY = (int)((y + offsetY) * scaleFactor);
     int realW = (int)(w * scaleFactor);
     int realH = (int)(h * scaleFactor);
-
-    // -------------------------------------
 
     HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
     HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, realW, realH);
     HGDIOBJ hOldBitmap = SelectObject(hMemoryDC, hBitmap);
 
-    // Pass the real physical pixel boundaries to BitBlt
+    // Pass the perfectly realigned coordinates down to the GDI capture array
     BitBlt(hMemoryDC, 0, 0, realW, realH, hScreenDC, realX, realY, SRCCOPY);
     
     cv::Mat frame(realH, realW, CV_8UC4);
