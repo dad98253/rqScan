@@ -67,3 +67,24 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Block absolute local machine user preferences
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Block compiler build assets
+Debug/
+Release/
+ipch/
+*.aps
+*.pdb
+
+# ALWAYS track installer project file definitions
+!*.vdproj
+
+# dont track output data files
+scale.txt
+screengrab.png
+
