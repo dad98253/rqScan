@@ -27,6 +27,7 @@ void HandleCaptureAction ();
 bool ProcessImageBuffer ( const cv::Mat &frame, std::string &outText, bool isScreenCapture );
 void ExecuteScreenCaptureWorkflow ();
 DWORD WINAPI CameraThreadProc ( LPVOID lpParam );
+LRESULT CALLBACK CamWndProc ( HWND, UINT, WPARAM, LPARAM );
 
 // Universal helper to pass a pixel matrix directly to ZXing using standard strings
 bool ProcessImageBuffer ( const cv::Mat &frame, std::string &outText, bool isScreenCapture ) {
@@ -271,59 +272,66 @@ void ExecuteScreenCaptureWorkflow () {
             DispatchMessageA ( &msg );
         }
 
-        if (!g_selection.done) return; // User aborted via ESC key hook
+        if ( !g_selection.done ) return; // User aborted via ESC key hook
 
-        int grabX = (std::min)(g_selection.start.x, g_selection.end.x);
-        int grabY = (std::min)(g_selection.start.y, g_selection.end.y);
-        int grabW = std::abs(g_selection.start.x - g_selection.end.x);
-        int grabH = std::abs(g_selection.start.y - g_selection.end.y);
+        int grabX = (std::min)( g_selection.start.x, g_selection.end.x );
+        int grabY = (std::min)( g_selection.start.y, g_selection.end.y );
+        int grabW = std::abs ( g_selection.start.x - g_selection.end.x );
+        int grabH = std::abs ( g_selection.start.y - g_selection.end.y );
 
-        if (grabW < 5 || grabH < 5) {
-            MessageBoxA(g_hMasterWindow, "Selected window capture boundaries are too small.", "Capture Error", MB_OK | MB_ICONERROR);
+        if ( grabW < 5 || grabH < 5 ) {
+            MessageBoxA ( g_hMasterWindow, "Selected window capture boundaries are too small.", "Capture Error", MB_OK | MB_ICONERROR );
             continue;
         }
 
-        // --- THE UNIVERSIAL TRANSPARENCY BYPASS FIX ---
+        // --- THE UNIVERSAL TRANSPARENCY BYPASS FIX ---
         // 1. Hide the semi-transparent black overlay veil window instantly
-        ShowWindow(hOverlay, SW_HIDE);
-        
+        ShowWindow ( hOverlay, SW_HIDE );
+
         // 2. Force an immediate system repaint loop so the desktop underneath refreshes on screen
-        UpdateWindow(GetDesktopWindow());
-        Sleep(50); // Give the X11 server 50ms to clear the overlay graphic surface
+        UpdateWindow ( GetDesktopWindow () );
+        Sleep ( 50 ); // Give the X11 server 50ms to clear the overlay graphic surface
 
         // 3. Grab the raw desktop pixels now that the overlay barrier is completely gone
-               // 3. Grab the raw desktop pixels now that the overlay barrier is completely gone
-        cv::Mat grabbedFrame = CaptureTargetRegion(grabX, grabY, grabW, grabH);
+        cv::Mat grabbedFrame = CaptureTargetRegion ( grabX, grabY, grabW, grabH );
 
         // 4. Destroy the overlay window since the selection action is completely finished
-        DestroyWindow(hOverlay);
+        DestroyWindow ( hOverlay );
         // ----------------------------------------------
 
-        // --- NEW: IN-APP SCREEN CAPTURE VISUAL PREVIEW WINDOW ---
-        HINSTANCE hInst = GetModuleHandleA(NULL);
+        // --- IN-APP SCREEN CAPTURE VISUAL PREVIEW WINDOW ---
+        HINSTANCE hInst = GetModuleHandleA ( NULL );
         WNDCLASSA previewWc = {};
         // Reuse our CamWndProc loop since it already knows how to handle a clean close event
-        previewWc.lpfnWndProc   = CamWndProc; 
-        previewWc.hInstance     = hInst;
+        previewWc.lpfnWndProc = CamWndProc;
+        previewWc.hInstance = hInst;
         previewWc.lpszClassName = "ScreenPreviewWinClass";
-        previewWc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-        previewWc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
-        RegisterClassA(&previewWc);
+        previewWc.hbrBackground = (HBRUSH)GetStockObject ( BLACK_BRUSH );
+        previewWc.hCursor = LoadCursorA ( NULL, IDC_ARROW );
+        RegisterClassA ( &previewWc );
 
-        // Create a dedicated pop-up window sized exactly to your grabbed crop dimensions
-        HWND hPreviewWin = CreateWindowExA(
+        // PIXEL-PERFECT VISUAL FIX: Calculate exact outer dimensions needed to clear borders & titlebar
+        RECT winRect = { 0, 0, grabbedFrame.cols, grabbedFrame.rows };
+        DWORD winStyle = WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX;
+        AdjustWindowRect ( &winRect, winStyle, FALSE );
+
+        int outerWidth = winRect.right - winRect.left;
+        int outerHeight = winRect.bottom - winRect.top;
+
+        // Create a dedicated pop-up window sized perfectly using corrected dimensions
+        HWND hPreviewWin = CreateWindowExA (
             WS_EX_TOPMOST, "ScreenPreviewWinClass", "Captured Frame Debug Preview",
-            WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
-            CW_USEDEFAULT, CW_USEDEFAULT, grabbedFrame.cols + 16, grabbedFrame.rows + 39, // Pad for borders/titlebar
+            winStyle,
+            CW_USEDEFAULT, CW_USEDEFAULT, outerWidth, outerHeight,
             g_hMasterWindow, NULL, hInst, NULL
         );
 
-        ShowWindow(hPreviewWin, SW_SHOW);
-        UpdateWindow(hPreviewWin);
+        ShowWindow ( hPreviewWin, SW_SHOW );
+        UpdateWindow ( hPreviewWin );
 
         // Prepare 32-bit Bitmap structure info (Matches our CV_8UC4 screen capture grab matrix)
-        BITMAPINFO previewBmi = {0};
-        previewBmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        BITMAPINFO previewBmi = { 0 };
+        previewBmi.bmiHeader.biSize = sizeof ( BITMAPINFOHEADER );
         previewBmi.bmiHeader.biWidth = grabbedFrame.cols;
         previewBmi.bmiHeader.biHeight = -grabbedFrame.rows; // Negative for top-down bit mapping
         previewBmi.bmiHeader.biPlanes = 1;
@@ -331,49 +339,49 @@ void ExecuteScreenCaptureWorkflow () {
         previewBmi.bmiHeader.biCompression = BI_RGB;
 
         // Force a window message pump loop to draw the pixels visually onto the screen surface
-        HDC hPreviewDC = GetDC(hPreviewWin);
+        HDC hPreviewDC = GetDC ( hPreviewWin );
         RECT previewRect;
-        GetClientRect(hPreviewWin, &previewRect);
-        
-        StretchDIBits(hPreviewDC, 0, 0, previewRect.right, previewRect.bottom, 
-                      0, 0, grabbedFrame.cols, grabbedFrame.rows, 
-                      grabbedFrame.data, &previewBmi, DIB_RGB_COLORS, SRCCOPY);
-        ReleaseDC(hPreviewWin, hPreviewDC);
+        GetClientRect ( hPreviewWin, &previewRect );
+
+        StretchDIBits ( hPreviewDC, 0, 0, previewRect.right, previewRect.bottom,
+            0, 0, grabbedFrame.cols, grabbedFrame.rows,
+            grabbedFrame.data, &previewBmi, DIB_RGB_COLORS, SRCCOPY );
+        ReleaseDC ( hPreviewWin, hPreviewDC );
         // ---------------------------------------------------------
 
         // Dynamic runtime check: Adjust color channels for Wine if running on Linux
-        cv::Mat processedFrame = grabbedFrame.clone();
-        HMODULE hWineGetVersion = GetModuleHandleA("ntdll.dll");
-        if (hWineGetVersion && GetProcAddress(hWineGetVersion, "wine_get_version")) {
-            cv::cvtColor(grabbedFrame, processedFrame, cv::COLOR_RGBA2BGRA);
+        cv::Mat processedFrame = grabbedFrame.clone ();
+        HMODULE hWineGetVersion = GetModuleHandleA ( "ntdll.dll" );
+        if ( hWineGetVersion && GetProcAddress ( hWineGetVersion, "wine_get_version" ) ) {
+            cv::cvtColor ( grabbedFrame, processedFrame, cv::COLOR_RGBA2BGRA );
         }
 
         // Optional Debug: Still write to disk if needed
-        cv::imwrite("screengrab.png", processedFrame);
+        cv::imwrite ( "screengrab.png", processedFrame );
 
         std::string decodedOutput;
-        if (ProcessImageBuffer(processedFrame, decodedOutput, true)) {
+        if ( ProcessImageBuffer ( processedFrame, decodedOutput, true ) ) {
             // Close the preview window explicitly right before displaying the success message box
-            if (IsWindow(hPreviewWin)) DestroyWindow(hPreviewWin);
-            UnregisterClassA("ScreenPreviewWinClass", hInst);
+            if ( IsWindow ( hPreviewWin ) ) DestroyWindow ( hPreviewWin );
+            UnregisterClassA ( "ScreenPreviewWinClass", hInst );
 
             std::string choiceMsg = "Valid QR Code Found!\n\nContent:\n" + decodedOutput + "\n\nChoose an action:";
-            int selection = MessageBoxA(g_hMasterWindow, choiceMsg.c_str(), "QR Code Decoded", MB_ABORTRETRYIGNORE | MB_ICONINFORMATION);
-            
-            if (selection == IDABORT) break;     
-            if (selection == IDRETRY) continue;  
-            break;                               
+            int selection = MessageBoxA ( g_hMasterWindow, choiceMsg.c_str (), "QR Code Decoded", MB_ABORTRETRYIGNORE | MB_ICONINFORMATION );
+
+            if ( selection == IDABORT ) break;
+            if ( selection == IDRETRY ) continue;
+            break;
         } else {
             // Leave the preview window open so the user can look at it alongside the error message box
-            int retryResult = MessageBoxA(g_hMasterWindow,
+            int retryResult = MessageBoxA ( g_hMasterWindow,
                 "No valid QR Code was discovered inside your selection canvas area.\n\nReview the open preview window to check the captured area.",
-                "Scan Evaluation Error", MB_RETRYCANCEL | MB_ICONERROR);
+                "Scan Evaluation Error", MB_RETRYCANCEL | MB_ICONERROR );
 
             // Clean up the preview window when they click Retry or Cancel
-            if (IsWindow(hPreviewWin)) DestroyWindow(hPreviewWin);
-            UnregisterClassA("ScreenPreviewWinClass", hInst);
+            if ( IsWindow ( hPreviewWin ) ) DestroyWindow ( hPreviewWin );
+            UnregisterClassA ( "ScreenPreviewWinClass", hInst );
 
-            if (retryResult != IDRETRY) break;
+            if ( retryResult != IDRETRY ) break;
         }
     }
 }
