@@ -181,22 +181,30 @@ LRESULT CALLBACK OverlayProc ( HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
 cv::Mat CaptureTargetRegion(int x, int y, int w, int h) {
     HDC hScreenDC = GetDC(NULL);
 
-    // --- DYNAMIC DPI SCALING DETECTOR ---
-    // Fetch the physical screen dimensions vs logical layout dimensions
-    int physicalWidth  = GetDeviceCaps(hScreenDC, DESKTOPHORZRES);
-    int logicalWidth   = GetDeviceCaps(hScreenDC, HORZRES);
-    
-    // Calculate the exact scaling multiplier (e.g., 1.5 for 150%, 2.0 for 200%)
     double scaleFactor = 1.0;
-    if (logicalWidth > 0) {
-        scaleFactor = (double)physicalWidth / (double)logicalWidth;
+
+    // 1. Check if a custom Linux scaling override is passed via Wine
+    char envBuf[32];
+    DWORD envLen = GetEnvironmentVariableA("UBUNTU_SCALE", envBuf, sizeof(envBuf));
+    
+    if (envLen > 0 && envLen < sizeof(envBuf)) {
+        // A custom scale variable was found! (e.g. "2.0")
+        scaleFactor = atof(envBuf);
+    } else {
+        // 2. Fall back to standard Windows DPI calculation if running natively
+        int physicalWidth  = GetDeviceCaps(hScreenDC, DESKTOPHORZRES);
+        int logicalWidth   = GetDeviceCaps(hScreenDC, HORZRES);
+        if (logicalWidth > 0 && physicalWidth != logicalWidth) {
+            scaleFactor = (double)physicalWidth / (double)logicalWidth;
+        }
     }
 
-    // Multiply your cursor selection bounds by the scale factor to target the true physical pixels
+    // Multiply selection bounds by the dynamic scale factor
     int realX = (int)(x * scaleFactor);
     int realY = (int)(y * scaleFactor);
     int realW = (int)(w * scaleFactor);
     int realH = (int)(h * scaleFactor);
+
     // -------------------------------------
 
     HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
