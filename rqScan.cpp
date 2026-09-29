@@ -198,6 +198,13 @@ cv::Mat CaptureTargetRegion(int x, int y, int w, int h) {
             scaleFactor = (double)physicalWidth / (double)logicalWidth;
         }
     }
+    
+    FILE *fptr = fopen("scale.txt", "w");
+    if (fptr != NULL) {
+    	fprintf(fptr, "scaleFactor: %.4f\n", scaleFactor);
+    	fclose(fptr);
+    }
+
 
     // Multiply selection bounds by the dynamic scale factor
     int realX = (int)(x * scaleFactor);
@@ -283,11 +290,54 @@ void ExecuteScreenCaptureWorkflow () {
         Sleep(50); // Give the X11 server 50ms to clear the overlay graphic surface
 
         // 3. Grab the raw desktop pixels now that the overlay barrier is completely gone
+               // 3. Grab the raw desktop pixels now that the overlay barrier is completely gone
         cv::Mat grabbedFrame = CaptureTargetRegion(grabX, grabY, grabW, grabH);
 
         // 4. Destroy the overlay window since the selection action is completely finished
         DestroyWindow(hOverlay);
         // ----------------------------------------------
+
+        // --- NEW: IN-APP SCREEN CAPTURE VISUAL PREVIEW WINDOW ---
+        HINSTANCE hInst = GetModuleHandleA(NULL);
+        WNDCLASSA previewWc = {};
+        // Reuse our CamWndProc loop since it already knows how to handle a clean close event
+        previewWc.lpfnWndProc   = CamWndProc; 
+        previewWc.hInstance     = hInst;
+        previewWc.lpszClassName = "ScreenPreviewWinClass";
+        previewWc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+        previewWc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
+        RegisterClassA(&previewWc);
+
+        // Create a dedicated pop-up window sized exactly to your grabbed crop dimensions
+        HWND hPreviewWin = CreateWindowExA(
+            WS_EX_TOPMOST, "ScreenPreviewWinClass", "Captured Frame Debug Preview",
+            WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
+            CW_USEDEFAULT, CW_USEDEFAULT, grabbedFrame.cols + 16, grabbedFrame.rows + 39, // Pad for borders/titlebar
+            g_hMasterWindow, NULL, hInst, NULL
+        );
+
+        ShowWindow(hPreviewWin, SW_SHOW);
+        UpdateWindow(hPreviewWin);
+
+        // Prepare 32-bit Bitmap structure info (Matches our CV_8UC4 screen capture grab matrix)
+        BITMAPINFO previewBmi = {0};
+        previewBmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        previewBmi.bmiHeader.biWidth = grabbedFrame.cols;
+        previewBmi.bmiHeader.biHeight = -grabbedFrame.rows; // Negative for top-down bit mapping
+        previewBmi.bmiHeader.biPlanes = 1;
+        previewBmi.bmiHeader.biBitCount = 32; // 32-bit for BGRA screen captures
+        previewBmi.bmiHeader.biCompression = BI_RGB;
+
+        // Force a window message pump loop to draw the pixels visually onto the screen surface
+        HDC hPreviewDC = GetDC(hPreviewWin);
+        RECT previewRect;
+        GetClientRect(hPreviewWin, &previewRect);
+        
+        StretchDIBits(hPreviewDC, 0, 0, previewRect.right, previewRect.bottom, 
+                      0, 0, grabbedFrame.cols, grabbedFrame.rows, 
+                      grabbedFrame.data, &previewBmi, DIB_RGB_COLORS, SRCCOPY);
+        ReleaseDC(hPreviewWin, hPreviewDC);
+        // ---------------------------------------------------------
 
         // Dynamic runtime check: Adjust color channels for Wine if running on Linux
         cv::Mat processedFrame = grabbedFrame.clone();
@@ -295,43 +345,16 @@ void ExecuteScreenCaptureWorkflow () {
         if (hWineGetVersion && GetProcAddress(hWineGetVersion, "wine_get_version")) {
             cv::cvtColor(grabbedFrame, processedFrame, cv::COLOR_RGBA2BGRA);
         }
-// Check the first 5 pixels of the captured frame
-        for ( int i = 0; i < 5; i++ ) {
-            // OpenCV Vec4b maps bytes sequentially in memory: [0]=B, [1]=G, [2]=R, [3]=A
-            cv::Vec4b pixel = grabbedFrame.at<cv::Vec4b> ( 0, i );
 
-            char debugBuf[256];
-            wsprintfA ( debugBuf, "Pixel %d -> Memory Byte 0 (B): %d | Memory Byte 1 (G): %d | Memory Byte 2 (R): %d\n",
-                i, pixel[0], pixel[1], pixel[2] );
-            OutputDebugStringA ( debugBuf ); // Prints to Visual Studio's Output Window or DebugView
-        }
-        // Optional Debug: Verify the image visually on your Linux filesystem
+        // Optional Debug: Still write to disk if needed
         cv::imwrite("screengrab.png", processedFrame);
-/*
-        cv::Mat processedFrame = grabbedFrame.clone(); // Fallback default for native Windows
-
-        // Dynamic runtime check: Does the host OS contain Wine's kernel hook?
-        HMODULE hWineGetVersion = GetModuleHandleA("ntdll.dll");
-        if (hWineGetVersion && GetProcAddress(hWineGetVersion, "wine_get_version")) {
-            // We are running on Linux via Wine! Swap the channel byte layout.
-            cv::cvtColor(grabbedFrame, processedFrame, cv::COLOR_RGBA2BGRA);
-        }
-*/
-        // ----------------------------------------
 
         std::string decodedOutput;
-/*
-        // Feed the dynamically processed frame directly into ZXing
         if (ProcessImageBuffer(processedFrame, decodedOutput, true)) {
-            std::string choiceMsg = "Valid QR Code Found!\n\nContent:\n" + decodedOutput + "\n\nChoose an action:";
-            int selection = MessageBoxA(g_hMasterWindow, choiceMsg.c_str(), "QR Code Decoded", MB_ABORTRETRYIGNORE | MB_ICONINFORMATION);
+            // Close the preview window explicitly right before displaying the success message box
+            if (IsWindow(hPreviewWin)) DestroyWindow(hPreviewWin);
+            UnregisterClassA("ScreenPreviewWinClass", hInst);
 
-            if (selection == IDABORT) break;
-            if (selection == IDRETRY) continue;
-            break;
-        } else {
-*/
-        if (ProcessImageBuffer(processedFrame, decodedOutput, true)) {
             std::string choiceMsg = "Valid QR Code Found!\n\nContent:\n" + decodedOutput + "\n\nChoose an action:";
             int selection = MessageBoxA(g_hMasterWindow, choiceMsg.c_str(), "QR Code Decoded", MB_ABORTRETRYIGNORE | MB_ICONINFORMATION);
             
@@ -339,9 +362,15 @@ void ExecuteScreenCaptureWorkflow () {
             if (selection == IDRETRY) continue;  
             break;                               
         } else {
+            // Leave the preview window open so the user can look at it alongside the error message box
             int retryResult = MessageBoxA(g_hMasterWindow,
-                "No valid QR Code was discovered inside your selection canvas area.",
+                "No valid QR Code was discovered inside your selection canvas area.\n\nReview the open preview window to check the captured area.",
                 "Scan Evaluation Error", MB_RETRYCANCEL | MB_ICONERROR);
+
+            // Clean up the preview window when they click Retry or Cancel
+            if (IsWindow(hPreviewWin)) DestroyWindow(hPreviewWin);
+            UnregisterClassA("ScreenPreviewWinClass", hInst);
+
             if (retryResult != IDRETRY) break;
         }
     }
